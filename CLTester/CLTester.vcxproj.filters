@@ -24,6 +24,24 @@
     <ClInclude Include="targetver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="cldevice.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="consthash.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cl_ext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cl_ext_intel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cl_ext_amd.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cl_ext_nvidia.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -32,5 +50,13 @@
     <ClCompile Include="CLTester.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="hello_world.cl">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="Conv2D1Chan.cl">
+      <Filter>Source Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
