@@ -18,18 +18,19 @@ __kernel void Conv2D1Chan(
 {
 
 	int2 pixcoord = (int2)( get_global_id(0), get_global_id(1) );
-	if (pixcoord.x*pixcoord.y == 0) return;
+	if (pixcoord.x >= get_image_width(image) || pixcoord.y >= get_image_height(image))
+		return;
 
-	float res = 0;
-	for (short y = -filterHeight / 2; y < filterHeight / 2; ++y)
+	float res = 0;	
+	for (short y = 0; y < filterHeight; ++y)
 	{
-		for (short x = -filterWidth / 2; x < filterWidth / 2; ++x)
+		for (short x = 0; x < filterWidth; ++x)
 		{
+			const int filterOffset = (y*filterWidth) + x;
 			float pix = read_imagef(image, imgSampler, pixcoord + (int2)(x, y)).x;
-			res += pix *filter[(y*filterWidth) + x];
+			res += pix * filter[filterOffset];
 		}
 	}
 
 	result[(pixcoord.y * resultStride) + pixcoord.x] = res;
-
 }

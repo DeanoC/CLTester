@@ -2,9 +2,6 @@
 //
 
 #include "stdafx.h"
-#include "cldevice.h"
-#include "consthash.h"
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,10 +15,30 @@
 #include <memory>
 #include <unordered_map>
 #include <iso646.h>
+#include <array>
+#include <cassert>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+#include "cldevice.h"
+#include "consthash.h"
 
 namespace {
+	//! \param size in bytes
+	//! \param alignment in bits (note bits not bytes!)
+	void* aligned_malloc(size_t size, size_t alignment)
+	{
+		// TODO this is windows specific, add other OS aligned mallocs
+		return _aligned_malloc(size, alignment >> 3);
+	}
 
-	/* convert the kernel file into a string */
+	void aligned_free(void* ptr)
+	{
+		return _aligned_free(ptr);
+	}
+
+	// convert the kernel file into a string
 	bool convertToString(const char *filename, std::string& s)
 	{
 		size_t size;
@@ -51,6 +68,85 @@ namespace {
 		std::cout << "Error: failed to open file\n:" << filename << std::endl;
 		return false;
 	}
+
+	const char *getOpenCLErrorString(cl_int error)
+	{
+		switch (error) {
+			// run-time and JIT compiler errors
+		case 0: return "CL_SUCCESS";
+		case -1: return "CL_DEVICE_NOT_FOUND";
+		case -2: return "CL_DEVICE_NOT_AVAILABLE";
+		case -3: return "CL_COMPILER_NOT_AVAILABLE";
+		case -4: return "CL_MEM_OBJECT_ALLOCATION_FAILURE";
+		case -5: return "CL_OUT_OF_RESOURCES";
+		case -6: return "CL_OUT_OF_HOST_MEMORY";
+		case -7: return "CL_PROFILING_INFO_NOT_AVAILABLE";
+		case -8: return "CL_MEM_COPY_OVERLAP";
+		case -9: return "CL_IMAGE_FORMAT_MISMATCH";
+		case -10: return "CL_IMAGE_FORMAT_NOT_SUPPORTED";
+		case -11: return "CL_BUILD_PROGRAM_FAILURE";
+		case -12: return "CL_MAP_FAILURE";
+		case -13: return "CL_MISALIGNED_SUB_BUFFER_OFFSET";
+		case -14: return "CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST";
+		case -15: return "CL_COMPILE_PROGRAM_FAILURE";
+		case -16: return "CL_LINKER_NOT_AVAILABLE";
+		case -17: return "CL_LINK_PROGRAM_FAILURE";
+		case -18: return "CL_DEVICE_PARTITION_FAILED";
+		case -19: return "CL_KERNEL_ARG_INFO_NOT_AVAILABLE";
+
+			// compile-time errors
+		case -30: return "CL_INVALID_VALUE";
+		case -31: return "CL_INVALID_DEVICE_TYPE";
+		case -32: return "CL_INVALID_PLATFORM";
+		case -33: return "CL_INVALID_DEVICE";
+		case -34: return "CL_INVALID_CONTEXT";
+		case -35: return "CL_INVALID_QUEUE_PROPERTIES";
+		case -36: return "CL_INVALID_COMMAND_QUEUE";
+		case -37: return "CL_INVALID_HOST_PTR";
+		case -38: return "CL_INVALID_MEM_OBJECT";
+		case -39: return "CL_INVALID_IMAGE_FORMAT_DESCRIPTOR";
+		case -40: return "CL_INVALID_IMAGE_SIZE";
+		case -41: return "CL_INVALID_SAMPLER";
+		case -42: return "CL_INVALID_BINARY";
+		case -43: return "CL_INVALID_BUILD_OPTIONS";
+		case -44: return "CL_INVALID_PROGRAM";
+		case -45: return "CL_INVALID_PROGRAM_EXECUTABLE";
+		case -46: return "CL_INVALID_KERNEL_NAME";
+		case -47: return "CL_INVALID_KERNEL_DEFINITION";
+		case -48: return "CL_INVALID_KERNEL";
+		case -49: return "CL_INVALID_ARG_INDEX";
+		case -50: return "CL_INVALID_ARG_VALUE";
+		case -51: return "CL_INVALID_ARG_SIZE";
+		case -52: return "CL_INVALID_KERNEL_ARGS";
+		case -53: return "CL_INVALID_WORK_DIMENSION";
+		case -54: return "CL_INVALID_WORK_GROUP_SIZE";
+		case -55: return "CL_INVALID_WORK_ITEM_SIZE";
+		case -56: return "CL_INVALID_GLOBAL_OFFSET";
+		case -57: return "CL_INVALID_EVENT_WAIT_LIST";
+		case -58: return "CL_INVALID_EVENT";
+		case -59: return "CL_INVALID_OPERATION";
+		case -60: return "CL_INVALID_GL_OBJECT";
+		case -61: return "CL_INVALID_BUFFER_SIZE";
+		case -62: return "CL_INVALID_MIP_LEVEL";
+		case -63: return "CL_INVALID_GLOBAL_WORK_SIZE";
+		case -64: return "CL_INVALID_PROPERTY";
+		case -65: return "CL_INVALID_IMAGE_DESCRIPTOR";
+		case -66: return "CL_INVALID_COMPILER_OPTIONS";
+		case -67: return "CL_INVALID_LINKER_OPTIONS";
+		case -68: return "CL_INVALID_DEVICE_PARTITION_COUNT";
+
+			// extension errors
+		case -1000: return "CL_INVALID_GL_SHAREGROUP_REFERENCE_KHR";
+		case -1001: return "CL_PLATFORM_NOT_FOUND_KHR";
+		case -1002: return "CL_INVALID_D3D10_DEVICE_KHR";
+		case -1003: return "CL_INVALID_D3D10_RESOURCE_KHR";
+		case -1004: return "CL_D3D10_RESOURCE_ALREADY_ACQUIRED_KHR";
+		case -1005: return "CL_D3D10_RESOURCE_NOT_ACQUIRED_KHR";
+		default: return "Unknown OpenCL error";
+		}
+	}
+
+#define CHK_OCL(sts) if((sts) != CL_SUCCESS) { std::cerr << "OpenCL Error:" << getOpenCLErrorString((sts)) << std::endl; }
 
 	void DecodeExtensionString(OpenCL::Device& cld)
 	{
@@ -94,7 +190,13 @@ namespace {
 			}
 		}
 
+		// misc flags
+		cl_bool flag = false;
+		clGetDeviceInfo(cld.deviceId, CL_DEVICE_HOST_UNIFIED_MEMORY, sizeof(cl_bool), &flag, nullptr);
+		if (flag) cld.flags = (OpenCL::DeviceFlags) (OpenCL::SHARED_HOST_DEVICE_MEMORY | cld.flags);
+		
 	}
+
 
 	void EstimateHMFLOPs(std::list<OpenCL::Device>& cldevices)
 	{
@@ -339,316 +441,506 @@ namespace {
 		}
 	}
 
-}
-
-bool CreateCLDevices(std::list<OpenCL::Device>& cldevices)
-{
-	using namespace OpenCL;
-
-	cl_uint numPlatforms;	//the NO. of platforms
-	cl_int	status = clGetPlatformIDs(0, nullptr, &numPlatforms);
-	if (status != CL_SUCCESS)
+	bool CreateCLDevices(std::list<OpenCL::Device>& cldevices)
 	{
-		std::cout << "Error: Getting platforms!" << std::endl;
-		return false;
-	}
+		using namespace OpenCL;
 
-	std::vector<cl_platform_id> platforms;
-	// each vendors GPU will be a different platform.
-	// CPU devices will likely by Intel or AMDs platform (depending on installs)
-	if (numPlatforms > 0)
-	{
-		platforms.resize(numPlatforms);
-		status = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+		cl_uint numPlatforms;	//the NO. of platforms
+		cl_int	status = clGetPlatformIDs(0, nullptr, &numPlatforms);
 		if (status != CL_SUCCESS)
 		{
-			std::cout << "Error: Getting platform IDs!" << std::endl;
+			std::cout << "Error: Getting platforms!" << std::endl;
 			return false;
 		}
-	}
 
-	// for some reason i'm getting duplicate platforms...so lets fix that
-	std::sort(platforms.begin(), platforms.end());
-	platforms.erase(std::unique(platforms.begin(), platforms.end()), platforms.end());
-
-
-	std::list<Device>::iterator preferredCPUDevice = cldevices.end();
-
-	for (cl_platform_id platform : platforms)
-	{
-		// A platform may have a number of devices, each a different type.
-		// A platform AND device id are a unique key to each device
-		cl_uint	numDevices = 0;
-		clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, nullptr, &numDevices);
-		if (numDevices == 0)	//no devices available.
+		std::vector<cl_platform_id> platforms;
+		// each vendors GPU will be a different platform.
+		// CPU devices will likely by Intel or AMDs platform (depending on installs)
+		if (numPlatforms > 0)
 		{
-			continue;
-		}
-
-		std::vector<cl_device_id> devices;
-		devices.resize(numDevices);
-		status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, numDevices, devices.data(), nullptr);
-
-		Vendor vendor(Vendor::Unknown);
-		APIVersion version(APIVersion::CL1_0);
-		static const size_t tempCharArraySize = 2048;
-		char tempCharArray[tempCharArraySize];
-
-		clGetPlatformInfo(platform, CL_PLATFORM_VENDOR, tempCharArraySize, tempCharArray, nullptr);
-		std::string platformVendor(tempCharArray);
-
-		if (platformVendor == "NVIDIA Corporation") vendor = Vendor::NVIDIA;
-		if (platformVendor == "Intel(R) Corporation") vendor = Vendor::Intel;
-		if (platformVendor == "Advanced Micro Devices, Inc.") vendor = Vendor::AMD;
-
-		// version is always OpenCL X.Y ZZZZZZZZZZ (Z is optional and vendor depedent)
-		clGetPlatformInfo(platform, CL_PLATFORM_VERSION, tempCharArraySize, tempCharArray, nullptr);
-		std::stringstream pvstrstream(tempCharArray);
-		std::string dummy, platformVersion;
-		pvstrstream >> dummy >> platformVersion;
-		std::string platformMajorVersion = platformVersion.substr(0, 1);
-		pvstrstream.str(platformMajorVersion);
-		int pmv = 0;
-		pvstrstream >> pmv;
-		switch(pmv)
-		{
-		case 1:
-			version = APIVersion::CL1_X;
-			if (platformVersion == "1.0") version = APIVersion::CL1_0;
-			if (platformVersion == "1.1") version = APIVersion::CL1_1;
-			if (platformVersion == "1.2") version = APIVersion::CL1_2;
-			break;
-		case 2:
-			version = APIVersion::CL2_X;
-			if (platformVersion == "2.0") version = APIVersion::CL2_0;
-			if (platformVersion == "2.1") version = APIVersion::CL2_1;
-			break;
-		case 3: case 4: case 5: case 6: case 7: case 8: case 9: 
-			version = APIVersion::CL3_PLUS;break;
-		default:
-			version = APIVersion::CL1_0; break;
-		}
-
-		for (cl_device_id device : devices)
-		{
-			bool deviceOk;
-			Device cld = { vendor, version, platform, device };
-			clGetDeviceInfo( device, CL_DEVICE_TYPE, sizeof(cl_device_type), &cld.type, nullptr);
-			deviceOk = (cld.type != CL_DEVICE_TYPE_CUSTOM); // we don't support CUSTOMs
-
-			cl_bool available = false;
-			clGetDeviceInfo(device, CL_DEVICE_AVAILABLE, sizeof(cl_bool), &available, nullptr);
-			deviceOk |= !!available;
-
-			DecodeExtensionString(cld);
-
-			if (deviceOk)
+			platforms.resize(numPlatforms);
+			status = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+			if (status != CL_SUCCESS)
 			{
-				auto inserted = cldevices.insert(cldevices.end(), 1, cld);
+				std::cout << "Error: Getting platform IDs!" << std::endl;
+				return false;
+			}
+		}
 
-				// we can have multiple platform providing a CPU device
-				// where possible pick the platform vendor that matchs the CPU vendor
-				if (cld.type == CL_DEVICE_TYPE_CPU)
+		// for some reason i'm getting duplicate platforms...so lets fix that
+		std::sort(platforms.begin(), platforms.end());
+		platforms.erase(std::unique(platforms.begin(), platforms.end()), platforms.end());
+
+
+		std::list<Device>::iterator preferredCPUDevice = cldevices.end();
+
+		for (cl_platform_id platform : platforms)
+		{
+			// A platform may have a number of devices, each a different type.
+			// A platform AND device id are a unique key to each device
+			cl_uint	numDevices = 0;
+			clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, nullptr, &numDevices);
+			if (numDevices == 0)	//no devices available.
+			{
+				continue;
+			}
+
+			std::vector<cl_device_id> devices;
+			devices.resize(numDevices);
+			status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, numDevices, devices.data(), nullptr);
+
+			Vendor vendor(Vendor::Unknown);
+			APIVersion version(APIVersion::CL1_0);
+			static const size_t tempCharArraySize = 2048;
+			char tempCharArray[tempCharArraySize];
+
+			clGetPlatformInfo(platform, CL_PLATFORM_VENDOR, tempCharArraySize, tempCharArray, nullptr);
+			std::string platformVendor(tempCharArray);
+
+			if (platformVendor == "NVIDIA Corporation") vendor = Vendor::NVIDIA;
+			if (platformVendor == "Intel(R) Corporation") vendor = Vendor::Intel;
+			if (platformVendor == "Advanced Micro Devices, Inc.") vendor = Vendor::AMD;
+
+			// version is always OpenCL X.Y ZZZZZZZZZZ (Z is optional and vendor depedent)
+			clGetPlatformInfo(platform, CL_PLATFORM_VERSION, tempCharArraySize, tempCharArray, nullptr);
+			std::stringstream pvstrstream(tempCharArray);
+			std::string dummy, platformVersion;
+			pvstrstream >> dummy >> platformVersion;
+			std::string platformMajorVersion = platformVersion.substr(0, 1);
+			pvstrstream.str(platformMajorVersion);
+			int pmv = 0;
+			pvstrstream >> pmv;
+			switch (pmv)
+			{
+			case 1:
+				version = APIVersion::CL1_X;
+				if (platformVersion == "1.0") version = APIVersion::CL1_0;
+				if (platformVersion == "1.1") version = APIVersion::CL1_1;
+				if (platformVersion == "1.2") version = APIVersion::CL1_2;
+				break;
+			case 2:
+				version = APIVersion::CL2_X;
+				if (platformVersion == "2.0") version = APIVersion::CL2_0;
+				if (platformVersion == "2.1") version = APIVersion::CL2_1;
+				break;
+			case 3: case 4: case 5: case 6: case 7: case 8: case 9:
+				version = APIVersion::CL3_PLUS; break;
+			default:
+				version = APIVersion::CL1_0; break;
+			}
+
+			for (cl_device_id device : devices)
+			{
+				bool deviceOk;
+				Device cld = { vendor, version, platform, device };
+				clGetDeviceInfo(device, CL_DEVICE_TYPE, sizeof(cl_device_type), &cld.type, nullptr);
+				deviceOk = (cld.type != CL_DEVICE_TYPE_CUSTOM); // we don't support CUSTOMs
+
+				cl_bool available = false;
+				clGetDeviceInfo(device, CL_DEVICE_AVAILABLE, sizeof(cl_bool), &available, nullptr);
+				deviceOk |= !!available;
+
+				DecodeExtensionString(cld);
+
+				if (deviceOk)
 				{
-					uint32_t vendorId = 0;
-					clGetDeviceInfo(device, CL_DEVICE_NAME, tempCharArraySize, tempCharArray, nullptr);
-					std::string deviceName(tempCharArray);
+					auto inserted = cldevices.insert(cldevices.end(), 1, cld);
 
-					if (vendor == Vendor::Intel && (deviceName.find("Intel") != std::string::npos))
+					// we can have multiple platform providing a CPU device
+					// where possible pick the platform vendor that matchs the CPU vendor
+					if (cld.type == CL_DEVICE_TYPE_CPU)
 					{
-						preferredCPUDevice = inserted;
-					} else if (vendor == Vendor::AMD && (deviceName.find("AMD") != std::string::npos))
-					{
-						preferredCPUDevice = inserted;
+						uint32_t vendorId = 0;
+						clGetDeviceInfo(device, CL_DEVICE_NAME, tempCharArraySize, tempCharArray, nullptr);
+						std::string deviceName(tempCharArray);
+
+						if (vendor == Vendor::Intel && (deviceName.find("Intel") != std::string::npos))
+						{
+							preferredCPUDevice = inserted;
+						}
+						else if (vendor == Vendor::AMD && (deviceName.find("AMD") != std::string::npos))
+						{
+							preferredCPUDevice = inserted;
+						}
 					}
 				}
 			}
 		}
-	}
 
-	// if we have a preferredCPUDevice remove others, if not just use the first
-	for (auto it = cldevices.begin(); it != cldevices.end(); )
-	{
-		if( it->type == CL_DEVICE_TYPE_CPU)
+		// if we have a preferredCPUDevice remove others, if not just use the first
+		for (auto it = cldevices.begin(); it != cldevices.end(); )
 		{
-			if (preferredCPUDevice == cldevices.end())
+			if (it->type == CL_DEVICE_TYPE_CPU)
 			{
-				preferredCPUDevice = it;
-			}
+				if (preferredCPUDevice == cldevices.end())
+				{
+					preferredCPUDevice = it;
+				}
 
-			if (it != preferredCPUDevice)
-			{
-				it = cldevices.erase(it);
-			} else
+				if (it != preferredCPUDevice)
+				{
+					it = cldevices.erase(it);
+				}
+				else
+				{
+					++it;
+				}
+			}
+			else
 			{
 				++it;
 			}
-		} else
-		{
-			++it;
 		}
-	}
 
-	//
-	// When we get here we should a list of actual physical devices
-	// We now want to create a context per platform, so devices in a platform
-	// can more easily share data (cross platform/context is generally a host 
-	// round trip always)
-	std::vector<std::vector<cl_device_id>> devicesPerPlatform;
-	for (cl_platform_id platform_id : platforms)
-	{
-		size_t platIdx = devicesPerPlatform.size();
-		devicesPerPlatform.resize(platIdx + 1);
-		for (const Device& cldevice : cldevices)
+		//
+		// When we get here we should a list of actual physical devices
+		// We now want to create a context per platform, so devices in a platform
+		// can more easily share data (cross platform/context is generally a host 
+		// round trip always)
+		std::vector<std::vector<cl_device_id>> devicesPerPlatform;
+		for (cl_platform_id platform_id : platforms)
 		{
-			if (cldevice.platformId == platform_id)
+			size_t platIdx = devicesPerPlatform.size();
+			devicesPerPlatform.resize(platIdx + 1);
+			for (const Device& cldevice : cldevices)
 			{
-				devicesPerPlatform[platIdx].push_back(cldevice.deviceId);
+				if (cldevice.platformId == platform_id)
+				{
+					devicesPerPlatform[platIdx].push_back(cldevice.deviceId);
+				}
 			}
 		}
-	}
-	std::vector<cl_context> contexts;
-	for (size_t i = 0; i < platforms.size(); ++i)
-	{
-		cl_platform_id platform_id = platforms[i];
-	
-		auto& devices = devicesPerPlatform[i];
-		const intptr_t contextProperties[] = 
+		std::vector<cl_context> contexts;
+		for (size_t i = 0; i < platforms.size(); ++i)
 		{
-			CL_CONTEXT_PLATFORM, (intptr_t) platform_id,
-			0, 0 
-		};
-		if( devices.size() == 0)
-		{
-			contexts.push_back(nullptr);
-			continue;
-		}
+			cl_platform_id platform_id = platforms[i];
 
-		cl_context context = clCreateContext(contextProperties, devices.size(), devices.data(), NULL, NULL, NULL);
-		contexts.push_back(context);
-
-		for (Device& cldevice : cldevices)
-		{
-			if(cldevice.platformId == platform_id)
+			auto& devices = devicesPerPlatform[i];
+			const intptr_t contextProperties[] =
 			{
-				cldevice.context = context;
+				CL_CONTEXT_PLATFORM, (intptr_t)platform_id,
+				0, 0
+			};
+			if (devices.size() == 0)
+			{
+				contexts.push_back(nullptr);
+				continue;
+			}
+
+			cl_context context = clCreateContext(contextProperties, devices.size(), devices.data(), NULL, NULL, NULL);
+			contexts.push_back(context);
+
+			for (Device& cldevice : cldevices)
+			{
+				if (cldevice.platformId == platform_id)
+				{
+					cldevice.context = context;
+				}
 			}
 		}
+		return true;
 	}
-	return true;
+
+
+	enum class ProgramRef
+	{
+		Conv2D1Chan,
+	};
+
+	struct KernelAssets
+	{
+		int			index;
+		std::string	name;
+	};
+
+	static const std::array<KernelAssets,1> kernelAssets =
+	{
+		{ (int)ProgramRef::Conv2D1Chan, "Conv2D1Chan" }
+	};
+
+	struct PerContext
+	{
+		std::vector<cl_program> programs;
+		std::vector<cl_kernel>	kernels;
+		cl_mem inImage;
+	};
+
+	struct PerDevice
+	{
+		const OpenCL::Device* cld;
+		cl_command_queue	queue;
+		// put the device name here, to make it easier when debugging
+		char const *		name;
+
+		cl_mem outBuffer;
+	};
+
+	struct App
+	{
+		std::list<OpenCL::Device> cldevices;
+		std::unordered_map<cl_context, PerContext> ctxs;
+		std::vector<PerDevice> devices;
+
+	};
+
 }
 
-
-
-int main(int argc, char* argv[])
+void CreatePerContexts(const std::list<OpenCL::Device>& cldevices, std::unordered_map<cl_context, PerContext>& ctxs)
 {
-	std::list<OpenCL::Device> cldevices;
-
-	if (!CreateCLDevices(cldevices)) return 10;
-
-	EstimateHMFLOPs(cldevices);
-	EstimateSMFLOPs(cldevices);
-	EstimateDMFLOPs(cldevices);
-
-	// lets now do something kernelish
-
-	// we have to do things (create programs) in terms of unique contexts
 	std::vector<cl_context> contexts;
-
-	for (OpenCL::Device& cld : cldevices)
+	for (const OpenCL::Device& cld : cldevices)
 	{
 		contexts.push_back(cld.context);
 	}
 	std::sort(contexts.begin(), contexts.end());
 	contexts.erase(std::unique(contexts.begin(), contexts.end()), contexts.end());
 
-	std::unordered_map<cl_context, cl_program> programs; // 1 program per context
-
-	// load/parsing/compiler ahoy ahoy
-	const char *filename = "Conv2D1Chan.cl";
-	std::string sourceStr;
-	convertToString(filename, sourceStr);
-	const char *source = sourceStr.c_str();
-	size_t sourceSize[] = { strlen(source) };
-
 	for (cl_context context : contexts)
 	{
-		programs[context] = clCreateProgramWithSource(context, 1, &source, sourceSize, nullptr);
+		PerContext ctx;
+		ctx.inImage = nullptr;
+		for (const KernelAssets& asset : kernelAssets)
+		{
+			std::string sourceStr;
+			const std::string filename = asset.name + ".cl";
+
+			convertToString(filename.c_str(), sourceStr);
+			const char *source = sourceStr.c_str();
+			size_t sourceSize[] = { strlen(source) };
+
+			cl_program prg = clCreateProgramWithSource(context, 1, &source, sourceSize, nullptr);
+			ctx.programs.push_back(prg);
+
+		}
+		ctxs[context] = ctx;
+	}
+}
+
+bool CreatePerDevices(const std::list<OpenCL::Device>& cldevices, std::unordered_map<cl_context, PerContext>& ctxs, std::vector<PerDevice>& devices)
+{
+	// now run the back end per device compile and create PerDevice structures
+	for (const OpenCL::Device& cld : cldevices)
+	{
+		const auto& ctx = ctxs[cld.context];
+
+		for (cl_program prg : ctx.programs)
+		{
+			cl_int status = clBuildProgram(prg, 1, &cld.deviceId, "-cl-std=CL1.2", nullptr, nullptr);
+			CHK_OCL(status);
+
+			cl_build_status build_status;
+			clGetProgramBuildInfo(prg, cld.deviceId, CL_PROGRAM_BUILD_STATUS, sizeof(cl_build_status), &build_status, nullptr);
+			if (build_status == CL_BUILD_ERROR)
+			{
+				size_t buildLogSize = 0;
+				clGetProgramBuildInfo(prg, cld.deviceId, CL_PROGRAM_BUILD_LOG, sizeof(size_t), nullptr, &buildLogSize);
+				std::unique_ptr<char[]> buildLog(new char[buildLogSize]);
+				clGetProgramBuildInfo(prg, cld.deviceId, CL_PROGRAM_BUILD_LOG, buildLogSize, buildLog.get(), nullptr);
+				std::cerr << buildLog.get();
+
+				return true;
+			}
+		}
+
+		cl_command_queue commandQueue = clCreateCommandQueue(cld.context, cld.deviceId, 0, nullptr);
+
+		char const * name = new char[1024];
+		clGetDeviceInfo(cld.deviceId, CL_DEVICE_NAME, 1024, (void*)name, nullptr);
+
+
+		devices.emplace_back<PerDevice>({
+			&cld,
+			commandQueue,
+			name,
+			nullptr
+		});
 	}
 
-	for (OpenCL::Device& cld : cldevices)
+	for (auto& ctx : ctxs)
 	{
-		cl_program prg = programs[cld.context];
-		cl_int status = clBuildProgram(prg, 1, &cld.deviceId, "-cl-std=CL1.2", nullptr, nullptr);
-
-		cl_build_status build_status;
-		clGetProgramBuildInfo(programs[cld.context], cld.deviceId, CL_PROGRAM_BUILD_STATUS, sizeof(cl_build_status), &build_status, NULL);
-		if (build_status == CL_BUILD_ERROR)
+		for (const KernelAssets& asset : kernelAssets)
 		{
-			size_t buildLogSize = 0;
-			clGetProgramBuildInfo(programs[cld.context], cld.deviceId, CL_PROGRAM_BUILD_LOG, sizeof(size_t), nullptr, &buildLogSize);
-			std::unique_ptr<char[]> buildLog(new char[buildLogSize]);
-			clGetProgramBuildInfo(programs[cld.context], cld.deviceId, CL_PROGRAM_BUILD_LOG, buildLogSize, buildLog.get(), nullptr);
-			std::cerr << buildLog.get();
-
-			return 10;
+			// only now we can create the kernels (both contexts and devices setup has occured)
+			cl_kernel kernel = clCreateKernel(ctx.second.programs[asset.index], asset.name.c_str(), nullptr);
+			ctx.second.kernels.push_back(kernel);
 		}
 	}
 
+	return false;
+}
+
+void CleanupPerContexts(std::unordered_map<cl_context, PerContext>& ctxs)
+{
+	for (auto& pc : ctxs)
+	{
+		clReleaseMemObject(pc.second.inImage);
+
+		for (cl_kernel kernel : pc.second.kernels) {
+			clReleaseKernel(kernel);
+		}
+		for (cl_program prg : pc.second.programs) {
+			clReleaseProgram(prg);
+		}
+		clReleaseContext(pc.first);
+	}
+	ctxs.clear();
+}
+
+void CleanupPerDevices(std::vector<PerDevice>& devices)
+{
+	for (auto& dev : devices)
+	{
+		clReleaseMemObject(dev.outBuffer);
+		delete[] dev.name;
+		clReleaseCommandQueue(dev.queue);
+	}
+	devices.clear();
+}
+
+
+bool SetupOpenCLForApp(App& app)
+{
+	std::list<OpenCL::Device>& cldevices = app.cldevices;
+
+	std::unordered_map<cl_context, PerContext>& ctxs = app.ctxs;
+	std::vector<PerDevice>& devices = app.devices;
+
+	if (!CreateCLDevices(cldevices))
+	{
+		return false;
+	}
+
+	EstimateHMFLOPs(cldevices);
+	EstimateSMFLOPs(cldevices);
+	EstimateDMFLOPs(cldevices);
+
+	// we have to do things (create programs) in terms of unique contexts
+	CreatePerContexts(cldevices, ctxs);
+	if (CreatePerDevices(cldevices, ctxs, devices))
+	{
+		return false;
+	}
+	
+	return true;
+}
+
+void CleanupOpenCLForApp(App& app)
+{
+	std::unordered_map<cl_context, PerContext>& ctxs = app.ctxs;
+	std::vector<PerDevice>& devices = app.devices;
+
 	// ---- They think its all over... It is now!
 	// destroy everything (included shared contexts)
-	for (std::pair<cl_context const, cl_program> programpair : programs)
+
+	CleanupPerDevices(devices);
+	CleanupPerContexts(ctxs);
+}
+
+int main(int argc, char* argv[])
+{
+	static const int MAIN_SUCCESS_CODE = 0;
+	static const int MAIN_FAIL_CODE = 10;
+
+	App app;
+	cl_int status;
+
+	if (!SetupOpenCLForApp(app)) { return MAIN_FAIL_CODE; }
+
+	// TODO use aligned alloc to avoid host -> host copy for integrated devices
+	// 4 = 4 channel but 'n' will always be the number that it would have been if you said 0 (whats in the file)
+	int w = 0, h = 0, n = 0;
+	unsigned char * loaddata = stbi_load("radpro256x256.jpg", &w, &h, &n, 4);
+	if (loaddata == nullptr || w == 0 || h == 0 || n == 0)
 	{
-		clReleaseProgram(programpair.second);
+		CleanupOpenCLForApp(app);
+		return MAIN_FAIL_CODE;
 	}
-	programs.clear();
-
-	for (cl_context context : contexts)
+	uint8_t* imagedata = (uint8_t*)aligned_malloc(w * h * 4, 4096);
+	if( imagedata == nullptr )
 	{
-		clReleaseContext(context);
+		CleanupOpenCLForApp(app);
+		return MAIN_FAIL_CODE;
 	}
-	contexts.clear();
-	cldevices.clear();
-	/*
-	//Step 4: Creating command queue associate with the context.
-	cl_command_queue commandQueue = clCreateCommandQueue(context, devices[0], 0, NULL);
+	memcpy(imagedata, loaddata, w * h * 4);
+	stbi_image_free(loaddata);
 
-	//Step 7: Initial input,output for the host and create memory objects for the kernel
-	const char* input = "GdkknVnqkc";
-	size_t strlength = strlen(input);
-	cout << "input string:" << endl;
-	cout << input << endl;
-	char *output = (char*)malloc(strlength + 1);
+	// ... process data if not NULL ...
+	const cl_image_format imgFmt = { CL_RGBA, CL_UNORM_INT8 };
+	const cl_image_desc imgDesc = { CL_MEM_OBJECT_IMAGE2D, w, h, 1, 1, w*4, 0, 0, 0, nullptr };
 
-	cl_mem inputBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, (strlength + 1) * sizeof(char), (void *)input, NULL);
-	cl_mem outputBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, (strlength + 1) * sizeof(char), NULL, NULL);
+	// we can share read buffer between all devices on a context (its upto the driver to decide)
+	for (auto& ctx : app.ctxs)
+	{
+		ctx.second.inImage = clCreateImage(ctx.first, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR | CL_MEM_HOST_NO_ACCESS, &imgFmt, &imgDesc, imagedata, &status);
+		CHK_OCL(status);
+	}
+	// however outputs have to be device specific
+	for (auto& device : app.devices)
+	{
+		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY)
+		{
+			device.outBuffer = clCreateBuffer(device.cld->context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, w * h * sizeof(float), nullptr, &status);
+		} else
+		{			
+			device.outBuffer = clCreateBuffer(device.cld->context, CL_MEM_WRITE_ONLY, w * h * sizeof(float), nullptr, &status);
+		}
+		CHK_OCL(status);
+	}
 
-	//Step 8: Create kernel object
-	cl_kernel kernel = clCreateKernel(program, "helloworld", NULL);
 
-	//Step 9: Sets Kernel arguments.
-	status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&inputBuffer);
-	status = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&outputBuffer);
+	//-----------
+	// main app body goes here
+	//-----------
+	for (const PerDevice& device : app.devices)
+	{
+		const size_t global_work_offset[2] = { 1, 1 };
+		const size_t global_work_size[2] = { w-1, h-1 };
+		const cl_int resultStride = w;
 
-	//Step 10: Running the kernel.
-	size_t global_work_size[1] = { strlength };
-	status = clEnqueueNDRangeKernel(commandQueue, kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+		const PerContext& ctx = app.ctxs[device.cld->context];
+		cl_kernel kernel = ctx.kernels[(int)ProgramRef::Conv2D1Chan];
 
-	//Step 11: Read the cout put back to host memory.
-	status = clEnqueueReadBuffer(commandQueue, outputBuffer, CL_TRUE, 0, strlength * sizeof(char), output, 0, NULL, NULL);
+		status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&ctx.inImage);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 1, sizeof(cl_int), (void *)&resultStride);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&device.outBuffer);
+		CHK_OCL(status);
 
-	output[strlength] = '\0';	//Add the terminal character to the end of output.
-	cout << "\noutput string:" << endl;
-	cout << output << endl;
+		status = clEnqueueNDRangeKernel(	
+								device.queue,
+								kernel,
+								2, global_work_offset, global_work_size, 
+								nullptr, 
+								0, nullptr, nullptr );
+		CHK_OCL(status);
 
-	//Step 12: Clean the resources.
-	status = clReleaseKernel(kernel);				//Release kernel.
-	status = clReleaseProgram(program);				//Release the program object.
-	status = clReleaseMemObject(inputBuffer);		//Release mem object.
-	status = clReleaseMemObject(outputBuffer);
-	status = clReleaseCommandQueue(commandQueue);	//Release  Command queue.
-	status = clReleaseContext(context);				//Release context.
-	*/
-	std::cout << "Passed!\n";
-	return 0;
+		std::unique_ptr<char[]> tmp;
+		char* data;
+		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY )
+		{
+			data = (char*) clEnqueueMapBuffer(device.queue, device.outBuffer, CL_TRUE, CL_MAP_READ, 0, w * h * sizeof(float), 0, nullptr, nullptr, &status);
+			CHK_OCL(status);
+		}
+		else
+		{
+			tmp.reset(new char[w * h * sizeof(float)]);
+			data = tmp.get();
+			status = clEnqueueReadBuffer(device.queue, device.outBuffer, CL_TRUE, 0, w * h * sizeof(float), tmp.get(), 0, nullptr, nullptr);
+			CHK_OCL(status);
+		}
+
+		static int counter = 0;
+		char filename[256];
+		sprintf_s(filename, 256, "dump%i.bin", counter++);
+		FILE* fh;
+		fopen_s(&fh, filename, "wb");
+		fwrite(data, 64 * 64 * 4, 1, fh);
+		fclose(fh);
+	}
+
+	aligned_free(imagedata);
+	CleanupOpenCLForApp(app);
+
+	return MAIN_SUCCESS_CODE;
 }

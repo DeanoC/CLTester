@@ -39,6 +39,11 @@ namespace OpenCL
 		Count 
 	};
 
+	enum DeviceFlags
+	{
+		SHARED_HOST_DEVICE_MEMORY = (1 << 0),
+	};
+
 	struct Device
 	{
 		Vendor			vendor;
@@ -47,6 +52,7 @@ namespace OpenCL
 		cl_device_id	deviceId;
 		cl_device_type	type;
 		cl_context		context;
+		DeviceFlags		flags;
 
 		// rough idea of floating point (half,single,double) operation per second from hw stats
 		// 0 if no native support for half or double

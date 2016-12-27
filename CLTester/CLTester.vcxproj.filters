@@ -42,6 +42,9 @@
     <ClInclude Include="cl_ext_nvidia.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="stb_image.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -52,9 +55,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="hello_world.cl">
-      <Filter>Source Files</Filter>
-    </None>
     <None Include="Conv2D1Chan.cl">
       <Filter>Source Files</Filter>
     </None>
