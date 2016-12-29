@@ -20,6 +20,8 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 #include "cldevice.h"
 #include "consthash.h"
@@ -744,9 +746,23 @@ bool CreatePerDevices(const std::list<OpenCL::Device>& cldevices, std::unordered
 
 		cl_command_queue commandQueue = clCreateCommandQueue(cld.context, cld.deviceId, 0, nullptr);
 
-		char const * name = new char[1024];
+		char* name = new char[1024];
 		clGetDeviceInfo(cld.deviceId, CL_DEVICE_NAME, 1024, (void*)name, nullptr);
-
+		std::string saneName(name);
+		// Removes others.
+		saneName.erase(
+			std::remove_if(
+				saneName.begin(), saneName.end(), [](char const c) {
+					if (c < ' ' || c > 128) return true;
+					switch(c)
+					{
+					case '\\': case '@': case '~': case '#': case '\"': case ' ': case '(': case ')': case '-': case '+': case '*':
+						return true;
+					default: return false;
+					}					
+				} ), saneName.end()
+			);		
+		strcpy_s(name, 1024, saneName.c_str());
 
 		devices.emplace_back<PerDevice>({
 			&cld,
@@ -930,13 +946,27 @@ int main(int argc, char* argv[])
 			CHK_OCL(status);
 		}
 
-		static int counter = 0;
 		char filename[256];
-		sprintf_s(filename, 256, "dump%i.bin", counter++);
+		sprintf_s(filename, 256, "dump_%s.bin", device.name);
 		FILE* fh;
 		fopen_s(&fh, filename, "wb");
-		fwrite(data, 64 * 64 * 4, 1, fh);
+		fwrite(data, w * h * sizeof(float), 1, fh);
 		fclose(fh);
+
+		std::unique_ptr<char[]> tmpout( new char[w*h * sizeof(uint32_t)] );
+		for (int y = 0; y < h; ++y)
+		{
+			for (int x = 0; x < w; ++x)
+			{
+				tmpout[(y * w * 4) + (x * 4) + 0] = (uint8_t)(data[(y*w) + x] / 255.f);
+				tmpout[(y * w * 4) + (x * 4) + 1] = (uint8_t)(data[(y*w) + x] / 255.f);
+				tmpout[(y * w * 4) + (x * 4) + 2] = (uint8_t)(data[(y*w) + x] / 255.f);
+				tmpout[(y * w * 4) + (x * 4) + 3] = (uint8_t)0xFF;
+			}
+		}
+
+		sprintf_s(filename, 256, "dump_%s.png", device.name);
+		stbi_write_png(filename, w, h, 4, data, w*4);
 	}
 
 	aligned_free(imagedata);

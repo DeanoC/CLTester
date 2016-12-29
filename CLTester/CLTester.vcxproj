@@ -160,6 +160,7 @@
     <ClInclude Include="cl_ext_nvidia.h" />
     <ClInclude Include="consthash.h" />
     <ClInclude Include="stb_image.h" />
+    <ClInclude Include="stb_image_write.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
