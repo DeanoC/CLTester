@@ -176,6 +176,7 @@
   <ItemGroup>
     <None Include="Conv2D1Chan.cl" />
     <None Include="Conv2D3Chan.cl" />
+    <None Include="Conv2D1ChanFromRGB.cl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

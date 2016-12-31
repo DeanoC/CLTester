@@ -648,13 +648,14 @@ namespace {
 	{
 		Conv2D1Chan,
 		Conv2D3Chan,
+		Conv2D1ChanFromRGB,
 	};
 
 	struct KernelAssetExtraData
 	{
 		union
 		{
-			uint32_t channelCount;
+			uint32_t outChannelCount;
 		};
 	};
 
@@ -665,10 +666,11 @@ namespace {
 		KernelAssetExtraData	extraData;
 	};
 
-	static const std::array<KernelAsset,2> kernelAssets =
+	static const std::array<KernelAsset,3> kernelAssets =
 	{
 		KernelAsset { (int)ProgramRef::Conv2D1Chan, "Conv2D1Chan", 1 },
-		KernelAsset { (int)ProgramRef::Conv2D3Chan, "Conv2D3Chan", 3 }
+		KernelAsset { (int)ProgramRef::Conv2D3Chan, "Conv2D3Chan", 3 },
+		KernelAsset { (int)ProgramRef::Conv2D1ChanFromRGB, "Conv2D1ChanFromRGB", 1 }
 	};
 
 	struct PerContext
@@ -874,7 +876,7 @@ int main(int argc, char* argv[])
 	App app;
 	cl_int status;
 
-	const int kernelIndex = (int)ProgramRef::Conv2D3Chan;
+	const int kernelIndex = (int)ProgramRef::Conv2D1ChanFromRGB;
 
 	if (!SetupOpenCLForApp(app))
 	{
@@ -912,7 +914,7 @@ int main(int argc, char* argv[])
 	// however outputs have to be device specific
 	for (auto& device : app.devices)
 	{
-		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.channelCount;
+		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.outChannelCount;
 		const size_t bufSize = w * h * sizeof(float) * resultChanCount;
 		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY)
 		{
@@ -940,7 +942,7 @@ int main(int argc, char* argv[])
 
 	for (const PerDevice& device : app.devices)
 	{
-		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.channelCount;
+		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.outChannelCount;
 		const size_t global_work_offset[2] = { 0, 0 };
 		const size_t global_work_size[2] = { w, h };
 		const cl_int resultStride = w * resultChanCount;
