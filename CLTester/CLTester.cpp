@@ -945,14 +945,20 @@ int main(int argc, char* argv[])
 			status = clEnqueueReadBuffer(device.queue, device.outBuffer, CL_TRUE, 0, w * h * sizeof(float), tmp.get(), 0, nullptr, nullptr);
 			CHK_OCL(status);
 		}
-
 		char filename[256];
+
+#define DUMP_BIN 0
+#define DUMP_PNG 1
+
+#if DUMP_BIN
 		sprintf_s(filename, 256, "dump_%s.bin", device.name);
 		FILE* fh;
 		fopen_s(&fh, filename, "wb");
 		fwrite(data, w * h * sizeof(float), 1, fh);
 		fclose(fh);
+#endif
 
+#if DUMP_PNG
 		std::unique_ptr<char[]> tmpout( new char[w*h * sizeof(uint32_t)] );
 		for (int y = 0; y < h; ++y)
 		{
@@ -967,6 +973,7 @@ int main(int argc, char* argv[])
 
 		sprintf_s(filename, 256, "dump_%s.png", device.name);
 		stbi_write_png(filename, w, h, 4, data, w*4);
+#endif
 	}
 
 	aligned_free(imagedata);
