@@ -16,22 +16,26 @@ __kernel void Conv2D3Chan(
 	int resultStride,
 	__global float* result )
 {
-
-	uint2 pixcoord = (uint2)( get_global_id(0), get_global_id(1) );
-	if (pixcoord.x >= get_image_width(image) || pixcoord.y >= get_image_height(image))
+	const int2 imageMaxCoords = (int2)(get_image_width(image), get_image_height(image));
+	const int2 pixcoord = (int2)( get_global_id(0), get_global_id(1) );
+	if ( any(pixcoord >=  imageMaxCoords) )
 		return;
 
 	float3 res = 0;	
-	for (ushort y = 0; y < filterHeight; ++y)
+	for (int y = 0; y < filterHeight; ++y)
 	{
-		for (ushort x = 0; x < filterWidth; ++x)
+		for (int x = 0; x < filterWidth; ++x)
 		{
 			const int filterOffset = (y*filterWidth) + x;
 			const float fv = filter[filterOffset];
-			float3 pix3 = read_imagef(image, imgSampler, (int2)(pixcoord.x + x, pixcoord.y + y) ).xyz;
+
+			// offset so the filter kernel is centered on this pixel
+			const int2 tc = (int2)( pixcoord.x + x - (filterWidth/2), pixcoord.y + y - (filterHeight/2) );
+			float3 pix3 = read_imagef(image, imgSampler, tc).xyz;
 			res += pix3 * (float3)(fv, fv, fv);
 		}
 	}
+	
 	result[(pixcoord.y * resultStride) + (pixcoord.x * 3) + 0] = clamp(res.x, 0.0f, 1.0f);
 	result[(pixcoord.y * resultStride) + (pixcoord.x * 3) + 1] = clamp(res.y, 0.0f, 1.0f);
 	result[(pixcoord.y * resultStride) + (pixcoord.x * 3) + 2] = clamp(res.z, 0.0f, 1.0f);
