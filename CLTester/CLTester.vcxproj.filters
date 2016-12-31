@@ -61,5 +61,8 @@
     <None Include="Conv2D1Chan.cl">
       <Filter>Source Files</Filter>
     </None>
+    <None Include="Conv2D3Chan.cl">
+      <Filter>Source Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

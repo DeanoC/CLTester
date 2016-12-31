@@ -647,24 +647,37 @@ namespace {
 	enum class ProgramRef
 	{
 		Conv2D1Chan,
+		Conv2D3Chan,
 	};
 
-	struct KernelAssets
+	struct KernelAssetExtraData
 	{
-		int			index;
-		std::string	name;
+		union
+		{
+			uint32_t channelCount;
+		};
 	};
 
-	static const std::array<KernelAssets,1> kernelAssets =
+	struct KernelAsset
 	{
-		{ (int)ProgramRef::Conv2D1Chan, "Conv2D1Chan" }
+		int						index;
+		std::string				name;
+		KernelAssetExtraData	extraData;
+	};
+
+	static const std::array<KernelAsset,2> kernelAssets =
+	{
+		KernelAsset { (int)ProgramRef::Conv2D1Chan, "Conv2D1Chan", 1 },
+		KernelAsset { (int)ProgramRef::Conv2D3Chan, "Conv2D3Chan", 3 }
 	};
 
 	struct PerContext
 	{
 		std::vector<cl_program> programs;
 		std::vector<cl_kernel>	kernels;
+		KernelAssetExtraData	kernelAssetExtraData;
 		cl_mem inImage;
+		
 	};
 
 	struct PerDevice
@@ -701,7 +714,7 @@ void CreatePerContexts(const std::list<OpenCL::Device>& cldevices, std::unordere
 	{
 		PerContext ctx;
 		ctx.inImage = nullptr;
-		for (const KernelAssets& asset : kernelAssets)
+		for (const KernelAsset& asset : kernelAssets)
 		{
 			std::string sourceStr;
 			const std::string filename = asset.name + ".cl";
@@ -712,6 +725,7 @@ void CreatePerContexts(const std::list<OpenCL::Device>& cldevices, std::unordere
 
 			cl_program prg = clCreateProgramWithSource(context, 1, &source, sourceSize, nullptr);
 			ctx.programs.push_back(prg);
+			ctx.kernelAssetExtraData = asset.extraData;
 
 		}
 		ctxs[context] = ctx;
@@ -774,7 +788,7 @@ bool CreatePerDevices(const std::list<OpenCL::Device>& cldevices, std::unordered
 
 	for (auto& ctx : ctxs)
 	{
-		for (const KernelAssets& asset : kernelAssets)
+		for (const KernelAsset& asset : kernelAssets)
 		{
 			// only now we can create the kernels (both contexts and devices setup has occured)
 			cl_kernel kernel = clCreateKernel(ctx.second.programs[asset.index], asset.name.c_str(), nullptr);
@@ -860,7 +874,12 @@ int main(int argc, char* argv[])
 	App app;
 	cl_int status;
 
-	if (!SetupOpenCLForApp(app)) { return MAIN_FAIL_CODE; }
+	const int kernelIndex = (int)ProgramRef::Conv2D3Chan;
+
+	if (!SetupOpenCLForApp(app))
+	{
+		return MAIN_FAIL_CODE;
+	}
 
 	// TODO use aligned alloc to avoid host -> host copy for integrated devices
 	// 4 = 4 channel but 'n' will always be the number that it would have been if you said 0 (whats in the file)
@@ -893,12 +912,22 @@ int main(int argc, char* argv[])
 	// however outputs have to be device specific
 	for (auto& device : app.devices)
 	{
+		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.channelCount;
+		const size_t bufSize = w * h * sizeof(float) * resultChanCount;
 		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY)
 		{
-			device.outBuffer = clCreateBuffer(device.cld->context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, w * h * sizeof(float), nullptr, &status);
+			device.outBuffer = clCreateBuffer(device.cld->context, 
+				CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 
+				bufSize, 
+				nullptr, 
+				&status);
 		} else
 		{			
-			device.outBuffer = clCreateBuffer(device.cld->context, CL_MEM_WRITE_ONLY, w * h * sizeof(float), nullptr, &status);
+			device.outBuffer = clCreateBuffer(device.cld->context, 
+				CL_MEM_WRITE_ONLY, 
+				bufSize, 
+				nullptr, 
+				&status);
 		}
 		CHK_OCL(status);
 	}
@@ -907,14 +936,17 @@ int main(int argc, char* argv[])
 	//-----------
 	// main app body goes here
 	//-----------
+
+
 	for (const PerDevice& device : app.devices)
 	{
-		const size_t global_work_offset[2] = { 1, 1 };
-		const size_t global_work_size[2] = { w-1, h-1 };
-		const cl_int resultStride = w;
+		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.channelCount;
+		const size_t global_work_offset[2] = { 0, 0 };
+		const size_t global_work_size[2] = { w, h };
+		const cl_int resultStride = w * resultChanCount;
 
 		const PerContext& ctx = app.ctxs[device.cld->context];
-		cl_kernel kernel = ctx.kernels[(int)ProgramRef::Conv2D1Chan];
+		cl_kernel kernel = ctx.kernels[kernelIndex];
 
 		status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&ctx.inImage);
 		CHK_OCL(status);
@@ -932,21 +964,33 @@ int main(int argc, char* argv[])
 		CHK_OCL(status);
 
 		std::unique_ptr<char[]> tmp;
-		char* data;
+		float* data;
+		const size_t bufSize = w * h * sizeof(float) * resultChanCount;
 		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY )
 		{
-			data = (char*) clEnqueueMapBuffer(device.queue, device.outBuffer, CL_TRUE, CL_MAP_READ, 0, w * h * sizeof(float), 0, nullptr, nullptr, &status);
+			data = (float *) clEnqueueMapBuffer(device.queue,
+				device.outBuffer, 
+				CL_TRUE, 
+				CL_MAP_READ, 
+				0, 
+				bufSize, 
+				0, nullptr, nullptr, &status);
 			CHK_OCL(status);
 		}
 		else
 		{
-			tmp.reset(new char[w * h * sizeof(float)]);
-			data = tmp.get();
-			status = clEnqueueReadBuffer(device.queue, device.outBuffer, CL_TRUE, 0, w * h * sizeof(float), tmp.get(), 0, nullptr, nullptr);
+			tmp.reset(new char[bufSize]);
+			data = (float*)tmp.get();
+			status = clEnqueueReadBuffer(device.queue, 
+				device.outBuffer, 
+				CL_TRUE, 
+				0, 
+				bufSize, 
+				tmp.get(), 0, nullptr, nullptr);
 			CHK_OCL(status);
 		}
-		char filename[256];
 
+		char filename[256];
 #define DUMP_BIN 0
 #define DUMP_PNG 1
 
@@ -954,7 +998,7 @@ int main(int argc, char* argv[])
 		sprintf_s(filename, 256, "dump_%s.bin", device.name);
 		FILE* fh;
 		fopen_s(&fh, filename, "wb");
-		fwrite(data, w * h * sizeof(float), 1, fh);
+		fwrite(data, bufSize * sizeof(float), 1, fh);
 		fclose(fh);
 #endif
 
@@ -964,15 +1008,25 @@ int main(int argc, char* argv[])
 		{
 			for (int x = 0; x < w; ++x)
 			{
-				tmpout[(y * w * 4) + (x * 4) + 0] = (uint8_t)(data[(y*w) + x] / 255.f);
-				tmpout[(y * w * 4) + (x * 4) + 1] = (uint8_t)(data[(y*w) + x] / 255.f);
-				tmpout[(y * w * 4) + (x * 4) + 2] = (uint8_t)(data[(y*w) + x] / 255.f);
-				tmpout[(y * w * 4) + (x * 4) + 3] = (uint8_t)0xFF;
+				float tmpData[3];
+				if( resultChanCount == 1 )
+				{
+					tmpData[0] = tmpData[1] = tmpData[2] = data[(((y*w) + x) * resultChanCount)] * 255.f;
+				} else if( resultChanCount == 3 )
+				{
+					tmpData[0] = data[(((y*w) + x) * resultChanCount) + 0] * 255.f;
+					tmpData[1] = data[(((y*w) + x) * resultChanCount) + 1] * 255.f;
+					tmpData[2] = data[(((y*w) + x) * resultChanCount) + 2] * 255.f;
+				}
+				tmpout[(((y*w) + x) * 4) + 0] = (uint8_t)(tmpData[0]);
+				tmpout[(((y*w) + x) * 4) + 1] = (uint8_t)(tmpData[1]);
+				tmpout[(((y*w) + x) * 4) + 2] = (uint8_t)(tmpData[2]);
+				tmpout[(((y*w) + x) * 4) + 3] = (uint8_t)0xFF;
 			}
 		}
 
 		sprintf_s(filename, 256, "dump_%s.png", device.name);
-		stbi_write_png(filename, w, h, 4, data, w*4);
+		stbi_write_png(filename, w, h, 4, tmpout.get(), w*4);
 #endif
 	}
 
