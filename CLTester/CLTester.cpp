@@ -23,6 +23,9 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#define NOMINMAX
+#include "windows.h"
+
 #include "cldevice.h"
 #include "consthash.h"
 
@@ -73,6 +76,7 @@ namespace {
 
 	const char *getOpenCLErrorString(cl_int error)
 	{
+		if (error != 0) { DebugBreak(); }
 		switch (error) {
 			// run-time and JIT compiler errors
 		case 0: return "CL_SUCCESS";
@@ -198,7 +202,6 @@ namespace {
 		if (flag) cld.flags = (OpenCL::DeviceFlags) (OpenCL::SHARED_HOST_DEVICE_MEMORY | cld.flags);
 		
 	}
-
 
 	void EstimateHMFLOPs(std::list<OpenCL::Device>& cldevices)
 	{
@@ -643,42 +646,62 @@ namespace {
 		return true;
 	}
 
-
 	enum class ProgramRef
 	{
-		Conv2D1Chan,
-		Conv2D3Chan,
-		Conv2D1ChanFromRGB,
+		Conv2D_F1Image_T1,
+		Conv2D_F3Image_T3,
+		Conv2D_F3Image_T1,
+		Conv2D_F3Image_T1Image,
+
+		ReLU_F1_T1,
+		ReLU_F1Image_T1,
+
+		Identity_F1Image_T1,
 	};
 
 	struct KernelAssetExtraData
 	{
-		union
-		{
-			uint32_t outChannelCount;
-		};
+		uint32_t fromChannelCount;	//!< How many input channels the memory has
+		uint32_t toChannelCount;	//!< how many channels this kernel outputs (in most cases from == to)
+		float widthScaleFactor;		//!< how much the width is scaled during the kernel
+		float heightScaleFactor;	//!< how much the height is scaled during the kernel
+		bool imageFrom;				//!< Is the from memory an image
+		bool imageTo;				//!< Is the to memory an image
 	};
 
 	struct KernelAsset
 	{
 		int						index;
+		std::string				filename;
 		std::string				name;
 		KernelAssetExtraData	extraData;
 	};
 
-	static const std::array<KernelAsset,3> kernelAssets =
+	static const std::array<KernelAsset,7> kernelAssets =
 	{
-		KernelAsset { (int)ProgramRef::Conv2D1Chan, "Conv2D1Chan", 1 },
-		KernelAsset { (int)ProgramRef::Conv2D3Chan, "Conv2D3Chan", 3 },
-		KernelAsset { (int)ProgramRef::Conv2D1ChanFromRGB, "Conv2D1ChanFromRGB", 1 }
+		KernelAsset{ (int)ProgramRef::Conv2D_F1Image_T1, "Conv2D", "Conv2D_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
+		KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T3, "Conv2D", "Conv2D_F3Image_T3", 3, 3, 1.0f, 1.0f, true, false },
+		KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T1, "Conv2D", "Conv2D_F3Image_T1", 3, 1, 1.0f, 1.0f, true, false },
+		KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T1Image, "Conv2D", "Conv2D_F3Image_T1Image", 3, 1, 1.0f, 1.0f, true, true },
+		KernelAsset{ (int)ProgramRef::ReLU_F1_T1, "ReLU", "ReLU_F1_T1", 1, 1, 1.0f, 1.0f, false, false },
+		KernelAsset{ (int)ProgramRef::ReLU_F1Image_T1, "ReLU", "ReLU_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
+		KernelAsset{ (int)ProgramRef::Identity_F1Image_T1, "utils", "Identity_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false }
+	};
+
+
+	const int LayerCount = 2;
+	static const std::array<ProgramRef,LayerCount> neuralLayers =
+	{
+		ProgramRef::Conv2D_F3Image_T1Image,
+		ProgramRef::ReLU_F1Image_T1
 	};
 
 	struct PerContext
 	{
 		std::vector<cl_program> programs;
 		std::vector<cl_kernel>	kernels;
-		KernelAssetExtraData	kernelAssetExtraData;
-		cl_mem inImage;
+		std::vector<KernelAssetExtraData>	kernelAssetExtraData;
+		cl_mem inMem;
 		
 	};
 
@@ -689,7 +712,8 @@ namespace {
 		// put the device name here, to make it easier when debugging
 		char const *		name;
 
-		cl_mem outBuffer;
+		cl_mem				inMem[LayerCount];
+		cl_mem				outMem[LayerCount];
 	};
 
 	struct App
@@ -715,11 +739,11 @@ void CreatePerContexts(const std::list<OpenCL::Device>& cldevices, std::unordere
 	for (cl_context context : contexts)
 	{
 		PerContext ctx;
-		ctx.inImage = nullptr;
+		ctx.inMem = nullptr;
 		for (const KernelAsset& asset : kernelAssets)
 		{
 			std::string sourceStr;
-			const std::string filename = asset.name + ".cl";
+			const std::string filename = asset.filename + ".cl";
 
 			convertToString(filename.c_str(), sourceStr);
 			const char *source = sourceStr.c_str();
@@ -727,7 +751,7 @@ void CreatePerContexts(const std::list<OpenCL::Device>& cldevices, std::unordere
 
 			cl_program prg = clCreateProgramWithSource(context, 1, &source, sourceSize, nullptr);
 			ctx.programs.push_back(prg);
-			ctx.kernelAssetExtraData = asset.extraData;
+			ctx.kernelAssetExtraData.push_back( asset.extraData);
 
 		}
 		ctxs[context] = ctx;
@@ -764,8 +788,9 @@ bool CreatePerDevices(const std::list<OpenCL::Device>& cldevices, std::unordered
 
 		char* name = new char[1024];
 		clGetDeviceInfo(cld.deviceId, CL_DEVICE_NAME, 1024, (void*)name, nullptr);
+
+		// Removes anything but letters and numbers (lets you use as part of a filename etc.)
 		std::string saneName(name);
-		// Removes others.
 		saneName.erase(
 			std::remove_if(
 				saneName.begin(), saneName.end(), [](char const c) {
@@ -805,7 +830,7 @@ void CleanupPerContexts(std::unordered_map<cl_context, PerContext>& ctxs)
 {
 	for (auto& pc : ctxs)
 	{
-		clReleaseMemObject(pc.second.inImage);
+		clReleaseMemObject(pc.second.inMem);
 
 		for (cl_kernel kernel : pc.second.kernels) {
 			clReleaseKernel(kernel);
@@ -822,13 +847,16 @@ void CleanupPerDevices(std::vector<PerDevice>& devices)
 {
 	for (auto& dev : devices)
 	{
-		clReleaseMemObject(dev.outBuffer);
+		for (int i = 0; i < LayerCount; ++i)
+		{
+			clReleaseMemObject(dev.outMem[i]);
+		}
+
 		delete[] dev.name;
 		clReleaseCommandQueue(dev.queue);
 	}
 	devices.clear();
 }
-
 
 bool SetupOpenCLForApp(App& app)
 {
@@ -868,6 +896,185 @@ void CleanupOpenCLForApp(App& app)
 	CleanupPerContexts(ctxs);
 }
 
+void DumpBuffer(const PerDevice& device, const float* data, const size_t bufSize, const int numChannels, const size_t w, const size_t h)
+{
+#define DUMP_BIN 0
+#define DUMP_PNG 1
+
+	char filename[256];
+#if DUMP_BIN
+	sprintf_s(filename, 256, "dump_%s.bin", device.name);
+	FILE* fh;
+	fopen_s(&fh, filename, "wb");
+	fwrite(data, bufSize * sizeof(float), 1, fh);
+	fclose(fh);
+#endif
+
+#if DUMP_PNG
+	std::unique_ptr<char[]> tmpout(new char[w*h * sizeof(uint32_t)]);
+	for (size_t y = 0; y < h; ++y)
+	{
+		for (size_t x = 0; x < w; ++x)
+		{
+			float tmpData[3];
+			if (numChannels == 1)
+			{
+				tmpData[0] = tmpData[1] = tmpData[2] = data[(((y*w) + x) * numChannels)] * 255.f;
+			}
+			else if (numChannels == 3)
+			{
+				tmpData[0] = data[(((y*w) + x) * numChannels) + 0] * 255.f;
+				tmpData[1] = data[(((y*w) + x) * numChannels) + 1] * 255.f;
+				tmpData[2] = data[(((y*w) + x) * numChannels) + 2] * 255.f;
+			}
+			tmpData[0] = std::min<float>( std::max<float>(tmpData[0], 0.0f), 255.0f );
+			tmpData[1] = std::min<float>( std::max<float>(tmpData[1], 0.0f), 255.0f );
+			tmpData[2] = std::min<float>( std::max<float>(tmpData[2], 0.0f), 255.0f );
+
+			tmpout[(((y*w) + x) * 4) + 0] = (uint8_t)(tmpData[0]);
+			tmpout[(((y*w) + x) * 4) + 1] = (uint8_t)(tmpData[1]);
+			tmpout[(((y*w) + x) * 4) + 2] = (uint8_t)(tmpData[2]);
+			tmpout[(((y*w) + x) * 4) + 3] = (uint8_t)0xFF;
+		}
+	}
+
+	sprintf_s(filename, 256, "dump_%s.png", device.name);
+	stbi_write_png(filename, w, h, 4, tmpout.get(), w * 4);
+#endif	
+}
+
+cl_mem AllocBuffer(const PerDevice& device, const size_t bufSize, const unsigned int usage)
+{
+	cl_int status;
+	cl_mem buffer = nullptr;
+
+	if (device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY)
+	{
+		buffer = clCreateBuffer(device.cld->context,
+			usage | CL_MEM_ALLOC_HOST_PTR,
+			bufSize,
+			nullptr,
+			&status);
+	}
+	else
+	{
+		buffer = clCreateBuffer(device.cld->context,
+			usage,
+			bufSize,
+			nullptr,
+			&status);
+	}
+	CHK_OCL(status);
+	return buffer;
+}
+
+void ReadbackBuffer(App app, const PerDevice& device, const int layerIndex, const size_t w, const size_t h)
+{
+	cl_int status;
+	const PerContext& ctx = app.ctxs[device.cld->context];
+	const uint32_t resultChanCount = ctx.kernelAssetExtraData[(int)neuralLayers[layerIndex]].toChannelCount;
+	std::unique_ptr<char[]> tmp;
+	float* data = nullptr;
+
+	const size_t bufSize = w * h * sizeof(float) * resultChanCount;
+	if (device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY)
+	{
+		data = (float *)clEnqueueMapBuffer(device.queue,
+			device.outMem[layerIndex],
+			CL_TRUE,
+			CL_MAP_READ,
+			0,
+			bufSize,
+			0, nullptr, nullptr, &status);
+		CHK_OCL(status);
+	}
+	else
+	{
+		tmp.reset(new char[bufSize]);
+		data = (float*)tmp.get();
+		status = clEnqueueReadBuffer(device.queue,
+			device.outMem[layerIndex],
+			CL_TRUE,
+			0,
+			bufSize,
+			tmp.get(),
+			0, nullptr, nullptr);
+		CHK_OCL(status);
+	}
+
+	assert(data != nullptr);
+
+	DumpBuffer(device, data, bufSize, resultChanCount, w, h);
+}
+
+void DoConvolution(App app, const int layerIndex, const int kernelIndex, const size_t w, const size_t h)
+{
+	cl_int status;
+	for (const PerDevice& device : app.devices)
+	{
+		const size_t global_work_offset[2] = { 0, 0 };
+		const size_t global_work_size[2] = { w, h };
+
+		const PerContext& ctx = app.ctxs[device.cld->context];
+		const KernelAssetExtraData& kaed = ctx.kernelAssetExtraData[kernelIndex];
+		const uint32_t resultChanCount = kaed.toChannelCount;
+		const cl_int resultStride = w * resultChanCount;
+		
+		cl_kernel kernel = ctx.kernels[kernelIndex];
+
+		status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&device.inMem[layerIndex]);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 1, sizeof(cl_int), (void *)&resultStride);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&device.outMem[layerIndex]);
+		CHK_OCL(status);
+
+		status = clEnqueueNDRangeKernel(
+			device.queue,
+			kernel,
+			2, global_work_offset, global_work_size,
+			nullptr,
+			0, nullptr, nullptr);
+		CHK_OCL(status);
+	}
+}
+
+void DoReLU(App app, const int layerIndex, const int kernelIndex, const size_t w, const size_t h)
+{
+	assert(layerIndex != 0);
+
+	cl_int status;
+	for (const PerDevice& device : app.devices)
+	{
+		const size_t global_work_offset[2] = { 0, 0 };
+		const size_t global_work_size[2] = { w, h };
+		const PerContext& ctx = app.ctxs[device.cld->context];
+		const KernelAssetExtraData& kaed = ctx.kernelAssetExtraData[kernelIndex];
+
+		const cl_int fromStride = w * kaed.fromChannelCount;
+		const cl_int toStride = w * kaed.toChannelCount;
+
+		cl_kernel kernel = ctx.kernels[kernelIndex];
+
+		status = clSetKernelArg(kernel, 0, sizeof(cl_int), (void *)&fromStride);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&device.inMem[layerIndex]);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 2, sizeof(cl_int), (void *)&toStride);
+		CHK_OCL(status);
+		status = clSetKernelArg(kernel, 3, sizeof(cl_mem), (void *)&device.outMem[layerIndex]);
+		CHK_OCL(status);
+
+		status = clEnqueueNDRangeKernel(
+			device.queue,
+			kernel,
+			2, global_work_offset, global_work_size,
+			nullptr,
+			0, nullptr, nullptr);
+		CHK_OCL(status);
+	}
+}
+
 int main(int argc, char* argv[])
 {
 	static const int MAIN_SUCCESS_CODE = 0;
@@ -875,18 +1082,26 @@ int main(int argc, char* argv[])
 
 	App app;
 	cl_int status;
+	
+	// data validate
+	for (int i = 1; i < LayerCount; ++i)
+	{
+		int kernelIndex0 = (int)neuralLayers[i - 1];
+		int kernelIndex1 = (int)neuralLayers[i];
 
-	const int kernelIndex = (int)ProgramRef::Conv2D1ChanFromRGB;
+		assert(kernelAssets[kernelIndex0].extraData.toChannelCount == kernelAssets[kernelIndex1].extraData.fromChannelCount);
+		assert(kernelAssets[kernelIndex0].extraData.imageTo == kernelAssets[kernelIndex1].extraData.imageFrom);
+	}
 
-	if (!SetupOpenCLForApp(app))
+ 	if (!SetupOpenCLForApp(app))
 	{
 		return MAIN_FAIL_CODE;
 	}
 
 	// TODO use aligned alloc to avoid host -> host copy for integrated devices
 	// 4 = 4 channel but 'n' will always be the number that it would have been if you said 0 (whats in the file)
-	int w = 0, h = 0, n = 0;
-	unsigned char * loaddata = stbi_load("radpro256x256.jpg", &w, &h, &n, 4);
+	unsigned int w = 0, h = 0, n = 0;
+	unsigned char * loaddata = stbi_load("radpro256x256.jpg", (int*)&w, (int*)&h, (int*)&n, 4);
 	if (loaddata == nullptr || w == 0 || h == 0 || n == 0)
 	{
 		CleanupOpenCLForApp(app);
@@ -902,134 +1117,125 @@ int main(int argc, char* argv[])
 	stbi_image_free(loaddata);
 
 	// ... process data if not NULL ...
-	const cl_image_format imgFmt = { CL_RGBA, CL_UNORM_INT8 };
-	const cl_image_desc imgDesc = { CL_MEM_OBJECT_IMAGE2D, w, h, 1, 1, w*4, 0, 0, 0, nullptr };
+	const cl_image_format imageFmt[] = { CL_RGBA, CL_UNORM_INT8, CL_R, CL_FLOAT };
 
-	// we can share read buffer between all devices on a context (its upto the driver to decide)
 	for (auto& ctx : app.ctxs)
 	{
-		ctx.second.inImage = clCreateImage(ctx.first, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR | CL_MEM_HOST_NO_ACCESS, &imgFmt, &imgDesc, imagedata, &status);
+		cl_image_format fmt[300];
+		int numFormats = 0;
+		status = clGetSupportedImageFormats(ctx.first, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 300, nullptr, (cl_uint*)&numFormats);
+		CHK_OCL(status);
+		status = clGetSupportedImageFormats(ctx.first, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, std::max(numFormats,300), fmt, nullptr);
+		CHK_OCL(status);
+		int foundCnt = 0;
+		for (int i = 0; i < numFormats; ++i)
+		{
+			for (int f = 0; f < 2; ++f)
+			{
+				if ((fmt[i].image_channel_data_type == imageFmt[f].image_channel_data_type) &&
+					(fmt[i].image_channel_order == imageFmt[f].image_channel_order))
+				{
+					foundCnt++;
+					break;
+				}
+			}
+		}
+		assert(foundCnt == 2);
+	}
+
+	// we can share read buffer between all devices on a context (its upto the driver to decide), currently the only read buffer is
+	// the first layer (the input image)
+	for (auto& ctx : app.ctxs)
+	{
+		const cl_image_desc imgDesc = { CL_MEM_OBJECT_IMAGE2D, w, h, 1, 1, 0, 0, 0, 0, nullptr };
+
+		const KernelAssetExtraData& kaed = ctx.second.kernelAssetExtraData[0];
+		const unsigned int usage = (CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR | CL_MEM_HOST_NO_ACCESS);
+		assert(kaed.imageFrom);
+
+		ctx.second.inMem = clCreateImage(ctx.first, usage, &imageFmt[0], &imgDesc, imagedata, &status);
 		CHK_OCL(status);
 	}
+
 	// however outputs have to be device specific
 	for (auto& device : app.devices)
 	{
-		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.outChannelCount;
-		const size_t bufSize = w * h * sizeof(float) * resultChanCount;
-		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY)
-		{
-			device.outBuffer = clCreateBuffer(device.cld->context, 
-				CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 
-				bufSize, 
-				nullptr, 
-				&status);
-		} else
-		{			
-			device.outBuffer = clCreateBuffer(device.cld->context, 
-				CL_MEM_WRITE_ONLY, 
-				bufSize, 
-				nullptr, 
-				&status);
-		}
-		CHK_OCL(status);
-	}
+		const PerContext& perCtx = app.ctxs[device.cld->context];
 
+		float scaledWidth = (float)w;
+		float scaledHeight = (float)h;
+
+		for (int i = 0; i < LayerCount; ++i)
+		{
+			const KernelAssetExtraData& kaed = perCtx.kernelAssetExtraData[(int)neuralLayers[i]];
+			scaledWidth = scaledWidth * kaed.widthScaleFactor;
+			scaledHeight = scaledHeight * kaed.heightScaleFactor;
+
+			int usage = CL_MEM_READ_WRITE;
+
+			if (i != LayerCount - 1)
+			{
+				usage |= CL_MEM_HOST_NO_ACCESS;
+			}
+
+			// we create into the destination (and backconnect into inputs)
+			if (kaed.imageTo)
+			{
+				const cl_image_desc imgDesc = { CL_MEM_OBJECT_IMAGE2D, (size_t)scaledWidth, (size_t)scaledHeight, 1, 1, 0, 0, 0, 0, nullptr };
+				device.outMem[i] = clCreateImage(device.cld->context, usage, &imageFmt[1], &imgDesc, nullptr, &status);
+				CHK_OCL(status);
+			} else
+			{
+				const size_t bufSize = w * h * sizeof(float) * kaed.toChannelCount;
+			
+				device.outMem[i] = AllocBuffer(device, bufSize, usage);
+			}
+			if(i > 0)
+			{
+				device.inMem[i] = device.outMem[i - 1];
+			} else
+			{
+				device.inMem[0] = perCtx.inMem;
+			}
+		}
+	}
 
 	//-----------
 	// main app body goes here
 	//-----------
 
+	float scaledWidth = (float)w;
+	float scaledHeight = (float)h;
 
+	// do the actual work
+	for (int i = 0; i < LayerCount; ++i)
+	{
+		const KernelAsset& ka = kernelAssets[(int)neuralLayers[i]];
+		const KernelAssetExtraData& kaed = ka.extraData;
+
+		scaledWidth = scaledWidth * kaed.widthScaleFactor;
+		scaledHeight = scaledHeight * kaed.heightScaleFactor;
+
+		switch(neuralLayers[i])
+		{
+		case ProgramRef::Conv2D_F3Image_T1:
+		case ProgramRef::Conv2D_F1Image_T1:
+		case ProgramRef::Conv2D_F3Image_T1Image:
+		case ProgramRef::Conv2D_F3Image_T3:
+			DoConvolution(app, i, (int)neuralLayers[i], (int) scaledWidth, (int)scaledHeight);
+			break;
+		case ProgramRef::ReLU_F1Image_T1:
+		case ProgramRef::ReLU_F1_T1:
+		case ProgramRef::Identity_F1Image_T1:
+			DoReLU(app, i, (int)neuralLayers[i], (int)scaledWidth, (int)scaledHeight);
+			break;
+		}		
+	}
+
+	// read the results of the kernels
 	for (const PerDevice& device : app.devices)
 	{
-		const uint32_t resultChanCount = app.ctxs[device.cld->context].kernelAssetExtraData.outChannelCount;
-		const size_t global_work_offset[2] = { 0, 0 };
-		const size_t global_work_size[2] = { w, h };
-		const cl_int resultStride = w * resultChanCount;
-
-		const PerContext& ctx = app.ctxs[device.cld->context];
-		cl_kernel kernel = ctx.kernels[kernelIndex];
-
-		status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&ctx.inImage);
-		CHK_OCL(status);
-		status = clSetKernelArg(kernel, 1, sizeof(cl_int), (void *)&resultStride);
-		CHK_OCL(status);
-		status = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&device.outBuffer);
-		CHK_OCL(status);
-
-		status = clEnqueueNDRangeKernel(	
-								device.queue,
-								kernel,
-								2, global_work_offset, global_work_size, 
-								nullptr, 
-								0, nullptr, nullptr );
-		CHK_OCL(status);
-
-		std::unique_ptr<char[]> tmp;
-		float* data;
-		const size_t bufSize = w * h * sizeof(float) * resultChanCount;
-		if( device.cld->flags & OpenCL::SHARED_HOST_DEVICE_MEMORY )
-		{
-			data = (float *) clEnqueueMapBuffer(device.queue,
-				device.outBuffer, 
-				CL_TRUE, 
-				CL_MAP_READ, 
-				0, 
-				bufSize, 
-				0, nullptr, nullptr, &status);
-			CHK_OCL(status);
-		}
-		else
-		{
-			tmp.reset(new char[bufSize]);
-			data = (float*)tmp.get();
-			status = clEnqueueReadBuffer(device.queue, 
-				device.outBuffer, 
-				CL_TRUE, 
-				0, 
-				bufSize, 
-				tmp.get(), 0, nullptr, nullptr);
-			CHK_OCL(status);
-		}
-
-		char filename[256];
-#define DUMP_BIN 0
-#define DUMP_PNG 1
-
-#if DUMP_BIN
-		sprintf_s(filename, 256, "dump_%s.bin", device.name);
-		FILE* fh;
-		fopen_s(&fh, filename, "wb");
-		fwrite(data, bufSize * sizeof(float), 1, fh);
-		fclose(fh);
-#endif
-
-#if DUMP_PNG
-		std::unique_ptr<char[]> tmpout( new char[w*h * sizeof(uint32_t)] );
-		for (int y = 0; y < h; ++y)
-		{
-			for (int x = 0; x < w; ++x)
-			{
-				float tmpData[3];
-				if( resultChanCount == 1 )
-				{
-					tmpData[0] = tmpData[1] = tmpData[2] = data[(((y*w) + x) * resultChanCount)] * 255.f;
-				} else if( resultChanCount == 3 )
-				{
-					tmpData[0] = data[(((y*w) + x) * resultChanCount) + 0] * 255.f;
-					tmpData[1] = data[(((y*w) + x) * resultChanCount) + 1] * 255.f;
-					tmpData[2] = data[(((y*w) + x) * resultChanCount) + 2] * 255.f;
-				}
-				tmpout[(((y*w) + x) * 4) + 0] = (uint8_t)(tmpData[0]);
-				tmpout[(((y*w) + x) * 4) + 1] = (uint8_t)(tmpData[1]);
-				tmpout[(((y*w) + x) * 4) + 2] = (uint8_t)(tmpData[2]);
-				tmpout[(((y*w) + x) * 4) + 3] = (uint8_t)0xFF;
-			}
-		}
-
-		sprintf_s(filename, 256, "dump_%s.png", device.name);
-		stbi_write_png(filename, w, h, 4, tmpout.get(), w*4);
-#endif
+		ReadbackBuffer(app, device, LayerCount-1, (int)scaledWidth, (int)scaledHeight);
 	}
 
 	aligned_free(imagedata);

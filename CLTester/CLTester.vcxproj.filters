@@ -58,14 +58,8 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Conv2D1Chan.cl">
-      <Filter>Source Files</Filter>
-    </None>
-    <None Include="Conv2D3Chan.cl">
-      <Filter>Source Files</Filter>
-    </None>
-    <None Include="Conv2D1ChanFromRGB.cl">
-      <Filter>Source Files</Filter>
-    </None>
+    <None Include="ReLU.cl" />
+    <None Include="Conv2D.cl" />
+    <None Include="utils.cl" />
   </ItemGroup>
 </Project>
