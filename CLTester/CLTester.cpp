@@ -29,6 +29,78 @@
 #include "cldevice.h"
 #include "consthash.h"
 
+enum class ProgramRef
+{
+	Conv2D_F1Image_T1,
+	Conv2D_F3Image_T3,
+	Conv2D_F3Image_T1,
+	Conv2D_F3Image_T1Image,
+
+	ReLU_F1_T1,
+	ReLU_F1Image_T1,
+	ReLU_F1_T1Image,
+	ReLU_F1Image_T1Image,
+
+	Identity_F1_T1,
+	Identity_F1Image_T1,
+	Identity_F1_T1Image,
+	Identity_F1Image_T1Image,
+
+	MaxPoolDownInt_F1_T1,
+	MaxPoolDownInt_F1Image_T1,
+	MaxPoolDownInt_F1_T1Image,
+	MaxPoolDownInt_F1Image_T1Image,
+};
+
+struct KernelAssetExtraData
+{
+	uint32_t fromChannelCount;	//!< How many input channels the memory has
+	uint32_t toChannelCount;	//!< how many channels this kernel outputs (in most cases from == to)
+	float widthScaleFactor;		//!< how much the width is scaled during the kernel
+	float heightScaleFactor;	//!< how much the height is scaled during the kernel
+	bool imageFrom;				//!< Is the from memory an image
+	bool imageTo;				//!< Is the to memory an image
+};
+
+struct KernelAsset
+{
+	int						index;
+	std::string				filename;
+	std::string				name;
+	KernelAssetExtraData	extraData;
+};
+
+static const std::array<KernelAsset, 16> kernelAssets =
+{
+	KernelAsset{ (int)ProgramRef::Conv2D_F1Image_T1, "Conv2D", "Conv2D_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
+	KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T3, "Conv2D", "Conv2D_F3Image_T3", 3, 3, 1.0f, 1.0f, true, false },
+	KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T1, "Conv2D", "Conv2D_F3Image_T1", 3, 1, 1.0f, 1.0f, true, false },
+	KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T1Image, "Conv2D", "Conv2D_F3Image_T1Image", 3, 1, 1.0f, 1.0f, true, true },
+
+	KernelAsset{ (int)ProgramRef::ReLU_F1_T1, "ReLU", "ReLU_F1_T1", 1, 1, 1.0f, 1.0f, false, false },
+	KernelAsset{ (int)ProgramRef::ReLU_F1Image_T1, "ReLU", "ReLU_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
+	KernelAsset{ (int)ProgramRef::ReLU_F1_T1Image, "ReLU", "ReLU_F1_T1Image", 1, 1, 1.0f, 1.0f, false, true },
+	KernelAsset{ (int)ProgramRef::ReLU_F1Image_T1Image, "ReLU", "ReLU_F1Image_T1Image", 1, 1, 1.0f, 1.0f, true, true },
+
+	KernelAsset{ (int)ProgramRef::Identity_F1_T1, "utils", "Identity_F1_T1", 1, 1, 1.0f, 1.0f, false, false },
+	KernelAsset{ (int)ProgramRef::Identity_F1Image_T1, "utils", "Identity_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
+	KernelAsset{ (int)ProgramRef::Identity_F1_T1Image, "utils", "Identity_F1_T1Image", 1, 1, 1.0f, 1.0f, false, true },
+	KernelAsset{ (int)ProgramRef::Identity_F1Image_T1Image, "utils", "Identity_F1Image_T1Image", 1, 1, 1.0f, 1.0f, true, true },
+
+	KernelAsset{ (int)ProgramRef::MaxPoolDownInt_F1_T1, "MaxPool", "MaxPoolDownInt_F1_T1", 1, 1, 0.5f, 0.5f, false, false },
+	KernelAsset{ (int)ProgramRef::MaxPoolDownInt_F1Image_T1, "MaxPool", "MaxPoolDownInt_F1Image_T1", 1, 1, 0.5f, 0.5f, true, false },
+	KernelAsset{ (int)ProgramRef::MaxPoolDownInt_F1_T1Image, "MaxPool", "MaxPoolDownInt_F1_T1Image", 1, 1, 0.5f, 0.5f, false, true },
+	KernelAsset{ (int)ProgramRef::MaxPoolDownInt_F1Image_T1Image, "MaxPool", "MaxPoolDownInt_F1Image_T1Image", 1, 1, 0.5f, 0.5f, true, true },
+};
+
+
+const int LayerCount = 3;
+static const std::array<ProgramRef, LayerCount> neuralLayers =
+{
+	ProgramRef::Conv2D_F3Image_T1Image,
+	ProgramRef::ReLU_F1Image_T1Image,
+	ProgramRef::MaxPoolDownInt_F1Image_T1,
+};
 namespace {
 	//! \param size in bytes
 	//! \param alignment in bits (note bits not bytes!)
@@ -646,56 +718,6 @@ namespace {
 		return true;
 	}
 
-	enum class ProgramRef
-	{
-		Conv2D_F1Image_T1,
-		Conv2D_F3Image_T3,
-		Conv2D_F3Image_T1,
-		Conv2D_F3Image_T1Image,
-
-		ReLU_F1_T1,
-		ReLU_F1Image_T1,
-
-		Identity_F1Image_T1,
-	};
-
-	struct KernelAssetExtraData
-	{
-		uint32_t fromChannelCount;	//!< How many input channels the memory has
-		uint32_t toChannelCount;	//!< how many channels this kernel outputs (in most cases from == to)
-		float widthScaleFactor;		//!< how much the width is scaled during the kernel
-		float heightScaleFactor;	//!< how much the height is scaled during the kernel
-		bool imageFrom;				//!< Is the from memory an image
-		bool imageTo;				//!< Is the to memory an image
-	};
-
-	struct KernelAsset
-	{
-		int						index;
-		std::string				filename;
-		std::string				name;
-		KernelAssetExtraData	extraData;
-	};
-
-	static const std::array<KernelAsset,7> kernelAssets =
-	{
-		KernelAsset{ (int)ProgramRef::Conv2D_F1Image_T1, "Conv2D", "Conv2D_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
-		KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T3, "Conv2D", "Conv2D_F3Image_T3", 3, 3, 1.0f, 1.0f, true, false },
-		KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T1, "Conv2D", "Conv2D_F3Image_T1", 3, 1, 1.0f, 1.0f, true, false },
-		KernelAsset{ (int)ProgramRef::Conv2D_F3Image_T1Image, "Conv2D", "Conv2D_F3Image_T1Image", 3, 1, 1.0f, 1.0f, true, true },
-		KernelAsset{ (int)ProgramRef::ReLU_F1_T1, "ReLU", "ReLU_F1_T1", 1, 1, 1.0f, 1.0f, false, false },
-		KernelAsset{ (int)ProgramRef::ReLU_F1Image_T1, "ReLU", "ReLU_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false },
-		KernelAsset{ (int)ProgramRef::Identity_F1Image_T1, "utils", "Identity_F1Image_T1", 1, 1, 1.0f, 1.0f, true, false }
-	};
-
-
-	const int LayerCount = 2;
-	static const std::array<ProgramRef,LayerCount> neuralLayers =
-	{
-		ProgramRef::Conv2D_F3Image_T1Image,
-		ProgramRef::ReLU_F1Image_T1
-	};
-
 	struct PerContext
 	{
 		std::vector<cl_program> programs;
@@ -768,7 +790,7 @@ bool CreatePerDevices(const std::list<OpenCL::Device>& cldevices, std::unordered
 		for (cl_program prg : ctx.programs)
 		{
 			cl_int status = clBuildProgram(prg, 1, &cld.deviceId, "-cl-std=CL1.2", nullptr, nullptr);
-			CHK_OCL(status);
+			//CHK_OCL(status);
 
 			cl_build_status build_status;
 			clGetProgramBuildInfo(prg, cld.deviceId, CL_PROGRAM_BUILD_STATUS, sizeof(cl_build_status), &build_status, nullptr);
@@ -779,6 +801,7 @@ bool CreatePerDevices(const std::list<OpenCL::Device>& cldevices, std::unordered
 				std::unique_ptr<char[]> buildLog(new char[buildLogSize]);
 				clGetProgramBuildInfo(prg, cld.deviceId, CL_PROGRAM_BUILD_LOG, buildLogSize, buildLog.get(), nullptr);
 				std::cerr << buildLog.get();
+				DebugBreak();
 
 				return true;
 			}
@@ -1007,52 +1030,24 @@ void ReadbackBuffer(App app, const PerDevice& device, const int layerIndex, cons
 	DumpBuffer(device, data, bufSize, resultChanCount, w, h);
 }
 
-void DoConvolution(App app, const int layerIndex, const int kernelIndex, const size_t w, const size_t h)
+void DoKernel (	App app, 
+				const int layerIndex, 
+				const int kernelIndex, 
+				const size_t fromWidth, 
+				const size_t fromHeight, 
+				const size_t toWidth, 
+				const size_t toHeight )
 {
 	cl_int status;
 	for (const PerDevice& device : app.devices)
 	{
 		const size_t global_work_offset[2] = { 0, 0 };
-		const size_t global_work_size[2] = { w, h };
-
-		const PerContext& ctx = app.ctxs[device.cld->context];
-		const KernelAssetExtraData& kaed = ctx.kernelAssetExtraData[kernelIndex];
-		const uint32_t resultChanCount = kaed.toChannelCount;
-		const cl_int resultStride = w * resultChanCount;
-		
-		cl_kernel kernel = ctx.kernels[kernelIndex];
-
-		status = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void *)&device.inMem[layerIndex]);
-		CHK_OCL(status);
-		status = clSetKernelArg(kernel, 1, sizeof(cl_int), (void *)&resultStride);
-		CHK_OCL(status);
-		status = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&device.outMem[layerIndex]);
-		CHK_OCL(status);
-
-		status = clEnqueueNDRangeKernel(
-			device.queue,
-			kernel,
-			2, global_work_offset, global_work_size,
-			nullptr,
-			0, nullptr, nullptr);
-		CHK_OCL(status);
-	}
-}
-
-void DoReLU(App app, const int layerIndex, const int kernelIndex, const size_t w, const size_t h)
-{
-	assert(layerIndex != 0);
-
-	cl_int status;
-	for (const PerDevice& device : app.devices)
-	{
-		const size_t global_work_offset[2] = { 0, 0 };
-		const size_t global_work_size[2] = { w, h };
+		const size_t global_work_size[2] = { toWidth, toHeight };
 		const PerContext& ctx = app.ctxs[device.cld->context];
 		const KernelAssetExtraData& kaed = ctx.kernelAssetExtraData[kernelIndex];
 
-		const cl_int fromStride = w * kaed.fromChannelCount;
-		const cl_int toStride = w * kaed.toChannelCount;
+		const cl_int fromStride = fromWidth * kaed.fromChannelCount;
+		const cl_int toStride = toWidth * kaed.toChannelCount;
 
 		cl_kernel kernel = ctx.kernels[kernelIndex];
 
@@ -1204,32 +1199,23 @@ int main(int argc, char* argv[])
 	// main app body goes here
 	//-----------
 
+
+	// do the actual work
 	float scaledWidth = (float)w;
 	float scaledHeight = (float)h;
 
-	// do the actual work
 	for (int i = 0; i < LayerCount; ++i)
 	{
 		const KernelAsset& ka = kernelAssets[(int)neuralLayers[i]];
 		const KernelAssetExtraData& kaed = ka.extraData;
 
+		float lastWidth = scaledWidth;
+		float lastHeight = scaledHeight;
+
 		scaledWidth = scaledWidth * kaed.widthScaleFactor;
 		scaledHeight = scaledHeight * kaed.heightScaleFactor;
 
-		switch(neuralLayers[i])
-		{
-		case ProgramRef::Conv2D_F3Image_T1:
-		case ProgramRef::Conv2D_F1Image_T1:
-		case ProgramRef::Conv2D_F3Image_T1Image:
-		case ProgramRef::Conv2D_F3Image_T3:
-			DoConvolution(app, i, (int)neuralLayers[i], (int) scaledWidth, (int)scaledHeight);
-			break;
-		case ProgramRef::ReLU_F1Image_T1:
-		case ProgramRef::ReLU_F1_T1:
-		case ProgramRef::Identity_F1Image_T1:
-			DoReLU(app, i, (int)neuralLayers[i], (int)scaledWidth, (int)scaledHeight);
-			break;
-		}		
+		DoKernel(app, i, (int)neuralLayers[i], (int)lastWidth, (int) lastHeight, (int)scaledWidth, (int)scaledHeight);
 	}
 
 	// read the results of the kernels

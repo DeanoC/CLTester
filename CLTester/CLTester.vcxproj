@@ -175,6 +175,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Conv2D.cl" />
+    <None Include="MaxPool.cl" />
     <None Include="ReLU.cl" />
     <None Include="utils.cl" />
   </ItemGroup>

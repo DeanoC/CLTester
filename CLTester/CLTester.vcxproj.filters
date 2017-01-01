@@ -61,5 +61,6 @@
     <None Include="ReLU.cl" />
     <None Include="Conv2D.cl" />
     <None Include="utils.cl" />
+    <None Include="MaxPool.cl" />
   </ItemGroup>
 </Project>

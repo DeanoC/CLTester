@@ -12,6 +12,7 @@ __constant float filter[filterWidth * filterHeight] =
 };
 
 __kernel void Conv2D_F1Image_T1(
+	int dummy,
 	__read_only image2d_t image,
 	int resultStride,
 	__global float* result )
@@ -38,6 +39,7 @@ __kernel void Conv2D_F1Image_T1(
 }
 
 __kernel void  Conv2D_F3Image_T3(
+	int dummy,
 	__read_only image2d_t image,
 	int resultStride,
 	__global float* result )
@@ -68,6 +70,7 @@ __kernel void  Conv2D_F3Image_T3(
 }
 
 __kernel void Conv2D_F3Image_T1(
+	int dummy,
 	__read_only image2d_t image,
 	int resultStride,
 	__global float* result )
@@ -98,8 +101,9 @@ __kernel void Conv2D_F3Image_T1(
 }
 
 __kernel void Conv2D_F3Image_T1Image(
+	int dummy0,
 	__read_only image2d_t inImage,
-	int dummy,
+	int dummy1,
 	__write_only image2d_t outImage )
 {
 	const int2 imageMaxCoords = (int2)(get_image_width(inImage), get_image_height(inImage));
